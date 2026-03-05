@@ -86,71 +86,75 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
             ].copy()
 
         # ------------------------- 3) Z-Wert berechnen
-        if z_type == "IQ" and has_iq and "IQ" in dff.columns:
-            thr = zmin if zmin is not None else CONFIG["zmin_iq"]
-            dff = dff[dff["IQ"] >= thr]
-            dff["zval"] = dff["IQ"]
-            z_title = "IQ"
-            cmin = zmin if zmin is not None else CONFIG["zmin_iq"]
-            cmax = zmax if zmax is not None else CONFIG["zmax_iq"]
-        else:
+        if z_type == "amp":
             thr = zmin if zmin is not None else CONFIG["zmin_amp"]
             dff = dff[dff["amp"] >= thr]
             dff["zval"] = dff["amp"]
+            show_norm_marker = False
+            norm_offset = 0.0
 
-            if norm_enable and norm_target is not None and not dff.empty:
+            if norm_enable and norm_target is not None:
                 norm_count = CONFIG.get("norm_peak_count", 100)
+
                 sorted_vals = dff["zval"].sort_values(ascending=False)
+
+                # Nur normalisieren, wenn genug Datenpunkte vorhanden sind
                 if len(sorted_vals) >= norm_count:
                     peak_val = sorted_vals.iloc[0]
                     norm_offset = norm_target - peak_val
                     dff["zval"] += norm_offset
+                    show_norm_marker = True
+                else:
+                    show_norm_marker = False  # Zu wenig Punkte
 
             z_title = f"Power [{'dBc' if norm_enable else 'dBFS'}]"
-            cmin = zmin if zmin is not None else CONFIG["zmin_amp"]
-            cmax = zmax if zmax is not None else CONFIG["zmax_amp"]
+            cmin, cmax = zmin, zmax
 
         # ------------------------- 4) Zoombereich & Achsenbereich
-        if dff.empty:
-            x_data = df[x_key]
-            y_data = df[y_key]
-        else:
-            x_data = dff[x_key]
-            y_data = dff[y_key]
+        x_data = dff[x_key]
+        y_data = dff[y_key]
         auto_x = [x_data.min(), x_data.max()]
         auto_y = [y_data.min(), y_data.max()]
         has_zoom = relayout and "xaxis.range[0]" in relayout
         x_range = [relayout["xaxis.range[0]"], relayout["xaxis.range[1]"]] if has_zoom else auto_x
         y_range = [relayout["yaxis.range[0]"], relayout["yaxis.range[1]"]] if has_zoom else auto_y
 
-        # ------------------------- 5) Deduplizieren (stabil wie original)
-        original_points = len(dff)
+        # ------------------------- 5) LOD + Loudest-Spurs garantieren
+        x_lo, x_hi = x_range
+        y_lo, y_hi = y_range
+        lod_target_bins = int(CONFIG.get("lod_target_bins", 450))
+        lod_min_points = int(CONFIG.get("lod_min_points", 120000))
         always_keep_top_n = int(CONFIG.get("always_keep_top_n", 300))
-        loudest_keep = dff.sort_values("zval", ascending=False).head(max(always_keep_top_n, 0)).copy()
 
-        use_lod = False
-        if not detailed_mode and not dff.empty:
-            x_lo, x_hi = x_range
-            y_lo, y_hi = y_range
-            if (x_hi > x_lo) and (y_hi > y_lo) and ((y_hi - y_lo) > (USRP_MAX_AUTO - USRP_MIN_AUTO) * 0.5):
-                bx = int((x_hi - x_lo) / ((x_hi - x_lo) / 500))
-                by = int((y_hi - y_lo) / ((y_hi - y_lo) / 500))
-                dff["x_bin"] = ((dff[x_key] - x_lo) / (x_hi - x_lo) * bx).astype(int)
-                dff["y_bin"] = ((dff[y_key] - y_lo) / (y_hi - y_lo) * by).astype(int)
-                dff = (
-                    dff.sort_values("zval", ascending=False)
-                    .drop_duplicates(["x_bin", "y_bin"])
-                )
-                dff = pd.concat([dff, loudest_keep], ignore_index=True)
-                dff = dff.drop_duplicates(subset=["rfsg_ghz", "usrp_ghz"], keep="first")
-                use_lod = True
+        full_sorted = dff.sort_values("zval", ascending=False)
+        loudest_keep = full_sorted.head(max(always_keep_top_n, 0)).copy()
+
+        original_points = len(dff)
+        use_lod = (not detailed_mode) and len(dff) >= lod_min_points and (x_hi > x_lo) and (y_hi > y_lo)
+        if use_lod:
+            bx = max(32, lod_target_bins)
+            by = max(32, lod_target_bins)
+
+            lod_df = dff.copy()
+            lod_df["x_bin"] = np.clip(((lod_df[x_key] - x_lo) / (x_hi - x_lo) * bx).astype(int), 0, bx)
+            lod_df["y_bin"] = np.clip(((lod_df[y_key] - y_lo) / (y_hi - y_lo) * by).astype(int), 0, by)
+            lod_df = (
+                lod_df.sort_values("zval", ascending=False)
+                .drop_duplicates(["x_bin", "y_bin"])
+            )
+
+            # Lauteste global immer behalten (auch wenn sie in anderem Bin ersetzt würden)
+            dff = pd.concat([lod_df, loudest_keep], ignore_index=True)
+            dff = dff.drop_duplicates(subset=["rfsg_ghz", "usrp_ghz"], keep="first")
 
         shown_points = len(dff)
         hidden_points = max(original_points - shown_points, 0)
         reduction_pct = (hidden_points / original_points * 100.0) if original_points else 0.0
 
         if detailed_mode:
-            binning_status = f"Detailed mode active: binning OFF | showing all {original_points:,} points."
+            binning_status = (
+                f"Detailed mode active: binning OFF | showing all {original_points:,} points."
+            )
         elif use_lod:
             binning_status = (
                 f"Binned mode active: ON | shown {shown_points:,} / {original_points:,} points "
@@ -158,8 +162,13 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
                 f"loudest {max(always_keep_top_n, 0):,} always preserved."
             )
         else:
-            binning_status = f"Binned mode active: OFF | showing {original_points:,} points."
+            reason = "below LOD threshold" if original_points < lod_min_points else "invalid current axis range"
+            binning_status = (
+                f"Binned mode selected, but currently OFF ({reason}). "
+                f"Showing {original_points:,} points."
+            )
 
+        # In Scattergl werden spätere Punkte "oben" gezeichnet -> lauteste zuletzt
         dff = dff.sort_values("zval", ascending=True)
 
         # ------------------------- 6) Plot
@@ -183,6 +192,21 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
             showlegend=False,
         ))
 
+        if len(loudest_keep) > 0:
+            fig.add_trace(go.Scattergl(
+                x=loudest_keep[x_key],
+                y=loudest_keep[y_key],
+                mode="markers",
+                marker=dict(
+                    size=max(CONFIG["marker_size"] + 2, 7),
+                    color="rgba(255,255,255,0)",
+                    line=dict(color="rgba(255,255,255,0.9)", width=1.2),
+                    symbol="circle-open",
+                ),
+                hoverinfo="skip",
+                showlegend=False,
+            ))
+
         # ------------------------------------------------------------------
         #   MESSBÄNDER EINZEICHNEN (USRP) – PERFORMANT
         # ------------------------------------------------------------------
@@ -195,9 +219,11 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
 
             for band_min, band_max in band_vals:
                 if y_key == "usrp_ghz":
+                    # Horizontal auf Y-Achse
                     band_y += [band_min, band_min, None, band_max, band_max, None]
                     band_x += [x_range[0], x_range[1], None, x_range[0], x_range[1], None]
                 elif x_key == "usrp_ghz":
+                    # Vertikal auf X-Achse
                     band_x += [band_min, band_min, None, band_max, band_max, None]
                     band_y += [y_range[0], y_range[1], None, y_range[0], y_range[1], None]
 
