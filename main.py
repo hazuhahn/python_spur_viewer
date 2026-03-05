@@ -65,6 +65,8 @@ app.layout = dbc.Container(
             html.Span("— Gray dashed lines = Band boundaries (CF ± BW/2)", style={"fontStyle": "italic"}),
             html.Br(),
             html.Span(id="intensity-count", style={"fontWeight": "bold", "marginLeft": "0.5rem"}),
+            html.Br(),
+            html.Span(id="binning-status", style={"fontWeight": "bold", "marginLeft": "0.5rem"}),
         ], className="hint-text"),
 
         sweep_interval,

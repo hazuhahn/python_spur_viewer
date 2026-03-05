@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import time
 from dash import Input, Output, State, callback_context, ctx, html
@@ -41,6 +42,7 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
     @app.callback(
         Output("intensity-plot", "figure"),
         Output("usrp-xrange", "data"),
+        Output("binning-status", "children"),
         Input("zmin", "value"), Input("zmax", "value"),
         Input("x_min", "value"), Input("x_max", "value"),
         Input("y_min", "value"), Input("y_max", "value"),
@@ -51,13 +53,14 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
         Input("intensity-plot", "relayoutData"),
         State("spectrum-plot", "clickData"),
         Input("swap-axes", "value"),
+        Input("detailed-mode", "value"),
     )
     def update_intensity_plot(
         zmin, zmax, x_min, x_max, y_min, y_max,
         norm_enable, norm_target,
         show_bands, show_usrp_band, usrp_bw_mhz,
         z_type, relayout, click_data,
-        swap_axes,
+        swap_axes, detailed_mode,
     ):
         axes = get_axes_config("intensity", swap_axes=swap_axes)
         x_key, y_key = axes["x_key"], axes["y_key"]
@@ -116,19 +119,57 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
         x_range = [relayout["xaxis.range[0]"], relayout["xaxis.range[1]"]] if has_zoom else auto_x
         y_range = [relayout["yaxis.range[0]"], relayout["yaxis.range[1]"]] if has_zoom else auto_y
 
-        # ------------------------- 5) Deduplizieren (zoomabhängig)
+        # ------------------------- 5) LOD + Loudest-Spurs garantieren
         x_lo, x_hi = x_range
         y_lo, y_hi = y_range
-        if (y_hi - y_lo) > (USRP_MAX_AUTO - USRP_MIN_AUTO) * 0.5:
-            bx = int((x_hi - x_lo) / ((x_hi - x_lo) / 500))
-            by = int((y_hi - y_lo) / ((y_hi - y_lo) / 500))
-            dff["x_bin"] = ((dff[x_key] - x_lo) / (x_hi - x_lo) * bx).astype(int)
-            dff["y_bin"] = ((dff[y_key] - y_lo) / (y_hi - y_lo) * by).astype(int)
-            dff = (
-                dff.sort_values("zval", ascending=False)
+        lod_target_bins = int(CONFIG.get("lod_target_bins", 450))
+        lod_min_points = int(CONFIG.get("lod_min_points", 120000))
+        always_keep_top_n = int(CONFIG.get("always_keep_top_n", 300))
+
+        full_sorted = dff.sort_values("zval", ascending=False)
+        loudest_keep = full_sorted.head(max(always_keep_top_n, 0)).copy()
+
+        original_points = len(dff)
+        use_lod = (not detailed_mode) and len(dff) >= lod_min_points and (x_hi > x_lo) and (y_hi > y_lo)
+        if use_lod:
+            bx = max(32, lod_target_bins)
+            by = max(32, lod_target_bins)
+
+            lod_df = dff.copy()
+            lod_df["x_bin"] = np.clip(((lod_df[x_key] - x_lo) / (x_hi - x_lo) * bx).astype(int), 0, bx)
+            lod_df["y_bin"] = np.clip(((lod_df[y_key] - y_lo) / (y_hi - y_lo) * by).astype(int), 0, by)
+            lod_df = (
+                lod_df.sort_values("zval", ascending=False)
                 .drop_duplicates(["x_bin", "y_bin"])
             )
-        dff = dff.sort_values("zval")
+
+            # Lauteste global immer behalten (auch wenn sie in anderem Bin ersetzt würden)
+            dff = pd.concat([lod_df, loudest_keep], ignore_index=True)
+            dff = dff.drop_duplicates(subset=["rfsg_ghz", "usrp_ghz"], keep="first")
+
+        shown_points = len(dff)
+        hidden_points = max(original_points - shown_points, 0)
+        reduction_pct = (hidden_points / original_points * 100.0) if original_points else 0.0
+
+        if detailed_mode:
+            binning_status = (
+                f"Detailed mode active: binning OFF | showing all {original_points:,} points."
+            )
+        elif use_lod:
+            binning_status = (
+                f"Binned mode active: ON | shown {shown_points:,} / {original_points:,} points "
+                f"({hidden_points:,} hidden, {reduction_pct:.1f}% reduction) | "
+                f"loudest {max(always_keep_top_n, 0):,} always preserved."
+            )
+        else:
+            reason = "below LOD threshold" if original_points < lod_min_points else "invalid current axis range"
+            binning_status = (
+                f"Binned mode selected, but currently OFF ({reason}). "
+                f"Showing {original_points:,} points."
+            )
+
+        # In Scattergl werden spätere Punkte "oben" gezeichnet -> lauteste zuletzt
+        dff = dff.sort_values("zval", ascending=True)
 
         # ------------------------- 6) Plot
         fig = go.Figure(go.Scattergl(
@@ -150,6 +191,21 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
             ),
             showlegend=False,
         ))
+
+        if len(loudest_keep) > 0:
+            fig.add_trace(go.Scattergl(
+                x=loudest_keep[x_key],
+                y=loudest_keep[y_key],
+                mode="markers",
+                marker=dict(
+                    size=max(CONFIG["marker_size"] + 2, 7),
+                    color="rgba(255,255,255,0)",
+                    line=dict(color="rgba(255,255,255,0.9)", width=1.2),
+                    symbol="circle-open",
+                ),
+                hoverinfo="skip",
+                showlegend=False,
+            ))
 
         # ------------------------------------------------------------------
         #   MESSBÄNDER EINZEICHNEN (USRP) – PERFORMANT
@@ -203,7 +259,7 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
             uirevision="intensity-fixed"
         )
 
-        return fig, [y_min, y_max]
+        return fig, [y_min, y_max], binning_status
 
     @app.callback(
         Output("spectrum-plot", "clickData"),

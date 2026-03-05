@@ -5,6 +5,7 @@ CONFIG: dict[str, object] = {
     "norm_enable": False,
     "show_usrp_band": False,
     "reverse_spectrum_default": False,
+    "detailed_mode_default": False,
 
     "zaxis_default": "amp",        # "amp" | "IQ"
     "zmin_amp": -90.0,
@@ -28,6 +29,10 @@ CONFIG: dict[str, object] = {
     "grid_col_minor": "rgba(160,160,160,0.15)",
     "grid_w_major": 1,
     "grid_w_minor": 0.5,
+
+    "lod_target_bins": 450,       # Zielauflösung pro Achse für LOD-Binning
+    "lod_min_points": 120000,      # Ab dieser Punktzahl LOD aktivieren
+    "always_keep_top_n": 300,      # Lauteste Spurs immer sichtbar halten
 
     # Layout heights --------------------------------------------------------
     "intensity_height": 700,

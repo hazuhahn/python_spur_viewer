@@ -63,6 +63,7 @@ def build_controls(has_iq):
                 dbc.Col(dbc.Switch(id="norm-enable", label="Enable Normalization", value=CONFIG["norm_enable"], className="me-4"), width="auto"),
                 dbc.Col(dbc.Switch(id="show-usrp-band", label="Show USRP Band", value=CONFIG["show_usrp_band"], className="me-4"), width="auto"),
                 dbc.Col(dbc.Switch(id="swap-axes", label="Swap X/Y Axes", value=False, className="me-4"), width="auto"),
+                dbc.Col(dbc.Switch(id="detailed-mode", label="Detailed Mode (no binning)", value=CONFIG.get("detailed_mode_default", False), className="me-4"), width="auto"),
             ], className="mb-3", align="center"),
             dbc.Row([
                 dbc.Col(html.Div([
