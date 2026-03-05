@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import time
 from dash import Input, Output, State, callback_context, ctx, html
@@ -41,6 +42,7 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
     @app.callback(
         Output("intensity-plot", "figure"),
         Output("usrp-xrange", "data"),
+        Output("binning-status", "children"),
         Input("zmin", "value"), Input("zmax", "value"),
         Input("x_min", "value"), Input("x_max", "value"),
         Input("y_min", "value"), Input("y_max", "value"),
@@ -51,13 +53,14 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
         Input("intensity-plot", "relayoutData"),
         State("spectrum-plot", "clickData"),
         Input("swap-axes", "value"),
+        Input("detailed-mode", "value"),
     )
     def update_intensity_plot(
         zmin, zmax, x_min, x_max, y_min, y_max,
         norm_enable, norm_target,
         show_bands, show_usrp_band, usrp_bw_mhz,
         z_type, relayout, click_data,
-        swap_axes,
+        swap_axes, detailed_mode,
     ):
         axes = get_axes_config("intensity", swap_axes=swap_axes)
         x_key, y_key = axes["x_key"], axes["y_key"]
@@ -83,52 +86,81 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
             ].copy()
 
         # ------------------------- 3) Z-Wert berechnen
-        if z_type == "amp":
+        if z_type == "IQ" and has_iq and "IQ" in dff.columns:
+            thr = zmin if zmin is not None else CONFIG["zmin_iq"]
+            dff = dff[dff["IQ"] >= thr]
+            dff["zval"] = dff["IQ"]
+            z_title = "IQ"
+            cmin = zmin if zmin is not None else CONFIG["zmin_iq"]
+            cmax = zmax if zmax is not None else CONFIG["zmax_iq"]
+        else:
             thr = zmin if zmin is not None else CONFIG["zmin_amp"]
             dff = dff[dff["amp"] >= thr]
             dff["zval"] = dff["amp"]
-            show_norm_marker = False
-            norm_offset = 0.0
 
-            if norm_enable and norm_target is not None:
+            if norm_enable and norm_target is not None and not dff.empty:
                 norm_count = CONFIG.get("norm_peak_count", 100)
-
                 sorted_vals = dff["zval"].sort_values(ascending=False)
-
-                # Nur normalisieren, wenn genug Datenpunkte vorhanden sind
                 if len(sorted_vals) >= norm_count:
                     peak_val = sorted_vals.iloc[0]
                     norm_offset = norm_target - peak_val
                     dff["zval"] += norm_offset
-                    show_norm_marker = True
-                else:
-                    show_norm_marker = False  # Zu wenig Punkte
 
             z_title = f"Power [{'dBc' if norm_enable else 'dBFS'}]"
-            cmin, cmax = zmin, zmax
+            cmin = zmin if zmin is not None else CONFIG["zmin_amp"]
+            cmax = zmax if zmax is not None else CONFIG["zmax_amp"]
 
         # ------------------------- 4) Zoombereich & Achsenbereich
-        x_data = dff[x_key]
-        y_data = dff[y_key]
+        if dff.empty:
+            x_data = df[x_key]
+            y_data = df[y_key]
+        else:
+            x_data = dff[x_key]
+            y_data = dff[y_key]
         auto_x = [x_data.min(), x_data.max()]
         auto_y = [y_data.min(), y_data.max()]
         has_zoom = relayout and "xaxis.range[0]" in relayout
         x_range = [relayout["xaxis.range[0]"], relayout["xaxis.range[1]"]] if has_zoom else auto_x
         y_range = [relayout["yaxis.range[0]"], relayout["yaxis.range[1]"]] if has_zoom else auto_y
 
-        # ------------------------- 5) Deduplizieren (zoomabhängig)
-        x_lo, x_hi = x_range
-        y_lo, y_hi = y_range
-        if (y_hi - y_lo) > (USRP_MAX_AUTO - USRP_MIN_AUTO) * 0.5:
-            bx = int((x_hi - x_lo) / ((x_hi - x_lo) / 500))
-            by = int((y_hi - y_lo) / ((y_hi - y_lo) / 500))
-            dff["x_bin"] = ((dff[x_key] - x_lo) / (x_hi - x_lo) * bx).astype(int)
-            dff["y_bin"] = ((dff[y_key] - y_lo) / (y_hi - y_lo) * by).astype(int)
-            dff = (
-                dff.sort_values("zval", ascending=False)
-                .drop_duplicates(["x_bin", "y_bin"])
+        # ------------------------- 5) Deduplizieren (stabil wie original)
+        original_points = len(dff)
+        always_keep_top_n = int(CONFIG.get("always_keep_top_n", 300))
+        loudest_keep = dff.sort_values("zval", ascending=False).head(max(always_keep_top_n, 0)).copy()
+
+        use_lod = False
+        if not detailed_mode and not dff.empty:
+            x_lo, x_hi = x_range
+            y_lo, y_hi = y_range
+            if (x_hi > x_lo) and (y_hi > y_lo) and ((y_hi - y_lo) > (USRP_MAX_AUTO - USRP_MIN_AUTO) * 0.5):
+                bx = int((x_hi - x_lo) / ((x_hi - x_lo) / 500))
+                by = int((y_hi - y_lo) / ((y_hi - y_lo) / 500))
+                dff["x_bin"] = ((dff[x_key] - x_lo) / (x_hi - x_lo) * bx).astype(int)
+                dff["y_bin"] = ((dff[y_key] - y_lo) / (y_hi - y_lo) * by).astype(int)
+                dff = (
+                    dff.sort_values("zval", ascending=False)
+                    .drop_duplicates(["x_bin", "y_bin"])
+                )
+                dff = pd.concat([dff, loudest_keep], ignore_index=True)
+                dff = dff.drop_duplicates(subset=["rfsg_ghz", "usrp_ghz"], keep="first")
+                use_lod = True
+
+        shown_points = len(dff)
+        hidden_points = max(original_points - shown_points, 0)
+        reduction_pct = (hidden_points / original_points * 100.0) if original_points else 0.0
+
+        if detailed_mode:
+            binning_status = f"Detailed mode active: binning OFF | showing all {original_points:,} points."
+        elif use_lod:
+            binning_status = (
+                f"Binned mode active: ON | shown {shown_points:,} / {original_points:,} points "
+                f"({hidden_points:,} hidden, {reduction_pct:.1f}% reduction) | "
+                f"loudest {max(always_keep_top_n, 0):,} always preserved."
             )
-        dff = dff.sort_values("zval")
+        else:
+            binning_status = f"Binned mode active: OFF | showing {original_points:,} points."
+
+        dff = dff.sort_values("zval", ascending=True)
 
         # ------------------------- 6) Plot
         fig = go.Figure(go.Scattergl(
@@ -163,11 +195,9 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
 
             for band_min, band_max in band_vals:
                 if y_key == "usrp_ghz":
-                    # Horizontal auf Y-Achse
                     band_y += [band_min, band_min, None, band_max, band_max, None]
                     band_x += [x_range[0], x_range[1], None, x_range[0], x_range[1], None]
                 elif x_key == "usrp_ghz":
-                    # Vertikal auf X-Achse
                     band_x += [band_min, band_min, None, band_max, band_max, None]
                     band_y += [y_range[0], y_range[1], None, y_range[0], y_range[1], None]
 
@@ -203,7 +233,7 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
             uirevision="intensity-fixed"
         )
 
-        return fig, [y_min, y_max]
+        return fig, [y_min, y_max], binning_status
 
     @app.callback(
         Output("spectrum-plot", "clickData"),
