@@ -11,13 +11,23 @@ from settings import CONFIG, REQ, OPT
 
 _selected_file_path = None  # Cache for selected file path
 
+
 def load_csv():
+    env_path = os.environ.get("SPUR_VIEWER_CSV")
+    if env_path:
+        return env_path
+
+    cached_path = get_selected_file_from_temp()
+    if cached_path:
+        return cached_path
+
     root = tk.Tk(); root.withdraw()
     path = filedialog.askopenfilename(
         title="Select CSV File",
         filetypes=[("CSV Files", "*.csv"), ("All Files", "*")]
     )
     return path
+
 
 def get_selected_file_from_temp():
     try:
@@ -26,10 +36,12 @@ def get_selected_file_from_temp():
     except:
         return None
 
+
 if not _selected_file_path:
     tmp = get_selected_file_from_temp()
     if tmp:
         _selected_file_path = tmp
+
 
 def parse_metadata(file_path):
     USRP_CENTERS, USRP_BW_GHZ = [], None
@@ -47,40 +59,84 @@ def parse_metadata(file_path):
                     pass
     return USRP_CENTERS, USRP_BW_GHZ
 
+
+def _candidate_csv_formats():
+    cfg_sep = CONFIG.get("csv_delimiter", ";")
+    cfg_dec = CONFIG.get("csv_decimal", ",")
+    cfg_ths = CONFIG.get("csv_thousands", None)
+
+    candidates = [
+        (cfg_sep, cfg_dec, cfg_ths),
+        (";", ",", "."),   # typical EU
+        (",", ".", ","),   # typical US
+        (";", ".", ","),
+        (",", ",", "."),
+    ]
+
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
+
+
+def _detect_csv_format(file_path):
+    best = None
+    best_score = -1
+
+    for sep, dec, ths in _candidate_csv_formats():
+        try:
+            preview = pd.read_csv(
+                file_path,
+                sep=sep,
+                decimal=dec,
+                thousands=ths,
+                comment="#",
+                nrows=200,
+                engine="c",
+                header=None,
+                names=REQ + OPT,
+                skip_blank_lines=True,
+            )
+            if preview.empty:
+                continue
+
+            req_num = preview[REQ].apply(pd.to_numeric, errors="coerce")
+            nonnull = int(req_num.notna().sum().sum())
+            plausible = int((req_num["rfsg"].median(skipna=True) > 1e6) and (req_num["usrp"].median(skipna=True) > 1e6))
+            score = nonnull + 1000 * plausible
+
+            if score > best_score:
+                best_score = score
+                best = (sep, dec, ths)
+        except Exception:
+            continue
+
+    return best
+
+
 def load_dataframe(file_path):
     print("Loading CSV file...")
     start_time = time.perf_counter()
 
-    sep = CONFIG.get("csv_delimiter", ";")
-    dec = CONFIG.get("csv_decimal", ",")
-    ths = CONFIG.get("csv_thousands", None)
     skip_warning = CONFIG.get("skip_csv_warning", False)
 
-    # --- Pre-check header sanity ---
-    try:
-        preview = pd.read_csv(
-            file_path,
-            sep=sep,
-            decimal=dec,
-            thousands=ths,
-            comment="#",
-            nrows=10,
-            engine="c",
-            header=None,
-            names=REQ + OPT
-        )
-        if any(re.match(r"^\d+[.,]?\d*$", c) for c in preview.columns):
-            raise ValueError("Header likely contains numeric values (bad delimiter?)")
-        if not any("rfsg" in str(c).lower() for c in preview.columns) or not any("usrp" in str(c).lower() for c in preview.columns):
-            raise ValueError("Missing 'rfsg' or 'usrp' column")
-    except Exception as e:
+    detected = _detect_csv_format(file_path)
+    if detected is None:
         if skip_warning:
-            print("⚠️ Skipping header warning due to 'skip_csv_warning': True")
-        else:
-            print(f"\n⚠️ CSV header check failed — check `settings.py`!")
-            print(f"→ Delimiter: '{sep}', Decimal: '{dec}'")
-            print(f"→ Error: {e}\n")
-            raise SystemExit("Aborting due to invalid CSV format.")
+            print("⚠️ Could not auto-detect CSV format; returning empty DataFrame.")
+            return pd.DataFrame(columns=REQ + OPT)
+        raise SystemExit("Aborting due to unreadable CSV format (delimiter/decimal).")
+
+    sep, dec, ths = detected
+    cfg_sep = CONFIG.get("csv_delimiter", ";")
+    cfg_dec = CONFIG.get("csv_decimal", ",")
+    if (sep, dec) != (cfg_sep, cfg_dec):
+        print(f"ℹ️ Auto-detected CSV format: delimiter='{sep}' decimal='{dec}' (overriding settings).")
+    else:
+        print(f"ℹ️ CSV format: delimiter='{sep}' decimal='{dec}'.")
 
     # --- Dask ---
     if CONFIG.get("use_dask", False):
@@ -183,8 +239,7 @@ def load_dataframe(file_path):
         chunks = [first_chunk]
     except Exception as e:
         print("\n❌ CSV chunk parsing failed.")
-        print(f"→ Check delimiter and decimal in `settings.py`")
-        print(f"→ Current: delimiter='{sep}', decimal='{dec}'")
+        print(f"→ Auto-detected: delimiter='{sep}', decimal='{dec}'")
         print(f"→ Error: {e}")
         if skip_warning:
             print("⚠️ Skipping error due to 'skip_csv_warning': True (data may be corrupted)")
@@ -217,6 +272,7 @@ def load_dataframe(file_path):
     print(f"CSV file loaded in {time.perf_counter() - start_time:.2f}s.")
     return df
 
+
 def check_warnings(df):
     warnings = []
     for col in REQ:
@@ -226,6 +282,7 @@ def check_warnings(df):
         if col not in df.columns or df[col].isna().all():
             warnings.append(f"{col} column not available")
     return warnings
+
 
 def prepare_dataframe(df):
     has_iq = "IQ_MAX_Absolute" in df.columns and not df["IQ_MAX_Absolute"].isna().all()
@@ -238,6 +295,7 @@ def prepare_dataframe(df):
     df["usrp_ghz"] = df["usrp"] / 1e9
     return df, has_iq
 
+
 def build_reference_maps(df):
     REF_AMP, REF_USRP = {}, {}
     for cf, g in df.groupby("rfsg_ghz"):
@@ -245,6 +303,7 @@ def build_reference_maps(df):
         REF_AMP[cf] = g.at[idx, "amp"]
         REF_USRP[cf] = g.at[idx, "usrp_ghz"]
     return REF_AMP, REF_USRP
+
 
 def get_axis_limits(df):
     return (

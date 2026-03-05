@@ -1,0 +1,82 @@
+body {
+  background: linear-gradient(180deg, #f4fbff 0%, #eef6fb 100%);
+}
+
+.app-shell {
+  max-width: 1600px;
+  padding: 1.2rem 1.4rem 2rem;
+}
+
+.hero-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(120deg, #1d3557 0%, #457b9d 45%, #4cc9f0 100%);
+  color: #fff;
+  border-radius: 16px;
+  padding: 1.25rem 1.5rem;
+  margin: 1rem 0 1.2rem;
+  box-shadow: 0 8px 24px rgba(29, 53, 87, 0.2);
+}
+
+.hero-title {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.hero-subtitle {
+  margin: 0.2rem 0 0;
+  opacity: 0.95;
+}
+
+.hero-chip {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 12px;
+  padding: 0.5rem 0.9rem;
+  text-align: right;
+  min-width: 145px;
+}
+
+.hero-chip-label {
+  display: block;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.card, .plot-card, .table-card, .warning-box {
+  border: 1px solid #dbe8f4;
+  border-radius: 14px;
+  box-shadow: 0 4px 14px rgba(53, 102, 160, 0.09);
+  background: #fff;
+}
+
+.plot-card {
+  padding: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.table-card {
+  padding: 0.75rem;
+}
+
+.section-heading {
+  margin-bottom: 0.75rem;
+  color: #163b5f;
+}
+
+.hint-text {
+  margin-bottom: 1rem;
+  color: #355070;
+  font-weight: 500;
+}
+
+.warning-box {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-color: #f2b8b5;
+  background: #fff8f7;
+  color: #9f1d20;
+}
