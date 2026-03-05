@@ -86,20 +86,16 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
             ].copy()
 
         # ------------------------- 3) Z-Wert berechnen
-        if z_type == "IQ" and has_iq and "IQ" in dff.columns:
-            thr = zmin if zmin is not None else CONFIG["zmin_iq"]
-            dff = dff[dff["IQ"] >= thr]
-            dff["zval"] = dff["IQ"]
-            z_title = "IQ"
-            cmin = zmin if zmin is not None else CONFIG["zmin_iq"]
-            cmax = zmax if zmax is not None else CONFIG["zmax_iq"]
-        else:
+        if z_type == "amp":
             thr = zmin if zmin is not None else CONFIG["zmin_amp"]
             dff = dff[dff["amp"] >= thr]
             dff["zval"] = dff["amp"]
+            show_norm_marker = False
+            norm_offset = 0.0
 
-            if norm_enable and norm_target is not None and not dff.empty:
+            if norm_enable and norm_target is not None:
                 norm_count = CONFIG.get("norm_peak_count", 100)
+
                 sorted_vals = dff["zval"].sort_values(ascending=False)
 
                 # Nur normalisieren, wenn genug Datenpunkte vorhanden sind
@@ -107,18 +103,16 @@ def register_callbacks(app, df, has_iq, REF_AMP, REF_USRP,
                     peak_val = sorted_vals.iloc[0]
                     norm_offset = norm_target - peak_val
                     dff["zval"] += norm_offset
+                    show_norm_marker = True
+                else:
+                    show_norm_marker = False  # Zu wenig Punkte
 
             z_title = f"Power [{'dBc' if norm_enable else 'dBFS'}]"
-            cmin = zmin if zmin is not None else CONFIG["zmin_amp"]
-            cmax = zmax if zmax is not None else CONFIG["zmax_amp"]
+            cmin, cmax = zmin, zmax
 
         # ------------------------- 4) Zoombereich & Achsenbereich
-        if dff.empty:
-            x_data = df[x_key]
-            y_data = df[y_key]
-        else:
-            x_data = dff[x_key]
-            y_data = dff[y_key]
+        x_data = dff[x_key]
+        y_data = dff[y_key]
         auto_x = [x_data.min(), x_data.max()]
         auto_y = [y_data.min(), y_data.max()]
         has_zoom = relayout and "xaxis.range[0]" in relayout
