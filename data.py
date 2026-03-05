@@ -12,6 +12,14 @@ from settings import CONFIG, REQ, OPT
 _selected_file_path = None  # Cache for selected file path
 
 def load_csv():
+    env_path = os.environ.get("SPUR_VIEWER_CSV")
+    if env_path:
+        return env_path
+
+    cached_path = get_selected_file_from_temp()
+    if cached_path:
+        return cached_path
+
     root = tk.Tk(); root.withdraw()
     path = filedialog.askopenfilename(
         title="Select CSV File",
