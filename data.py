@@ -117,6 +117,32 @@ def _detect_csv_format(file_path):
     return best
 
 
+
+
+def _coerce_numeric_columns(df):
+    numeric_cols = [c for c in (REQ + OPT) if c in df.columns]
+    for col in numeric_cols:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            continue
+
+        s = df[col].astype(str).str.strip()
+        parsed = pd.to_numeric(s, errors="coerce")
+
+        if parsed.notna().sum() == 0:
+            eu = pd.to_numeric(
+                s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+                errors="coerce",
+            )
+            us = pd.to_numeric(
+                s.str.replace(",", "", regex=False),
+                errors="coerce",
+            )
+            parsed = eu if eu.notna().sum() >= us.notna().sum() else us
+
+        df[col] = parsed
+
+    return df
+
 def load_dataframe(file_path):
     print("Loading CSV file...")
     start_time = time.perf_counter()
@@ -159,6 +185,8 @@ def load_dataframe(file_path):
             ddf = ddf.dropna(subset=["rfsg", "usrp"]).persist()
             with ProgressBar():
                 df = ddf.compute()
+            df = _coerce_numeric_columns(df)
+            df.dropna(subset=["rfsg", "usrp"], inplace=True)
             print(f"Loaded via Dask in {time.perf_counter() - start_time:.2f}s.")
             return df
         except Exception as e:
@@ -267,6 +295,7 @@ def load_dataframe(file_path):
     sys.stdout.write("\r[" + "#" * 50 + "] 100%\n")
 
     df = pd.concat(chunks, ignore_index=True)
+    df = _coerce_numeric_columns(df)
     df.dropna(subset=["rfsg", "usrp"], inplace=True)
 
     print(f"CSV file loaded in {time.perf_counter() - start_time:.2f}s.")
